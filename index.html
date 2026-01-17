@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Neon Bunny Tower</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel for in-browser compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Inter', sans-serif;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+        }
+        .font-orbitron {
+            font-family: 'Orbitron', sans-serif;
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/"
+  }
+}
+</script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // --- TYPES & CONSTANTS ---
+        const GameStatus = {
+            MENU: 'MENU',
+            PLAYING: 'PLAYING',
+            GAMEOVER: 'GAMEOVER'
+        };
+
+        const WORLD_WIDTH = 600;
+        const CANVAS_HEIGHT = 800;
+        const PLATFORM_HEIGHT = 20;
+
+        const GRAVITY = 0.6;           
+        const BASE_JUMP_FORCE = -15.0;  
+        const MOMENTUM_SCALE = 0.3;    
+
+        const AIR_ACCEL = 0.8;          
+        const GROUND_FRIC = 0.82;       
+        const AIR_FRIC = 0.985;         
+        const MAX_HORIZONTAL_SPEED = 15; 
+        const JUMP_BUFFER_MS = 200;     
+
+        const FLOOR_HEIGHT = 100;
+        const WORLD_FLOOR_Y = CANVAS_HEIGHT - FLOOR_HEIGHT;
+
+        const COMBO_MAX_TIME_MS = 3000;
+        const GROUND_TOLERANCE_MS = 250; 
+        const PLATFORM_GAP_AVG = 140;
+
+        // --- HUD COMPONENT ---
+        const HUD = ({ score, height, combo, comboTimer = 0, speed, isMuted, onToggleMute }) => {
+            const momentumBorder = combo > 8 ? "border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]" : "border-pink-500/30";
+            const momentumText = combo > 8 ? "text-red-500" : "text-pink-400";
+
+            return (
+                <div 
+                className="fixed top-0 left-0 w-full p-4 pointer-events-none flex justify-between items-start z-10 text-white font-orbitron"
+                style={{ paddingTop: 'calc(1rem + env(safe-area-inset-top))' }}
+                >
+                <div className="space-y-1 pointer-events-auto">
+                    <div className="bg-black/40 backdrop-blur-md border border-cyan-500/30 px-4 py-2 rounded-lg">
+                    <p className="text-xs text-cyan-400 uppercase tracking-widest">Score</p>
+                    <p className="text-2xl font-bold">{Math.floor(score)}</p>
+                    </div>
+                    <div className="bg-black/40 backdrop-blur-md border border-purple-500/30 px-4 py-2 rounded-lg">
+                    <p className="text-xs text-purple-400 uppercase tracking-widest">Height</p>
+                    <p className="text-xl font-bold">{Math.floor(height)}m</p>
+                    </div>
+                </div>
+
+                <div className="flex flex-col items-end space-y-2 pointer-events-auto">
+                    <button 
+                    onClick={onToggleMute}
+                    className="bg-black/40 backdrop-blur-md border border-white/20 p-2 rounded-lg hover:bg-white/10 transition-colors pointer-events-auto"
+                    >
+                    {isMuted ? (
+                        <span className="text-red-500 text-xs font-bold">MUTE</span>
+                    ) : (
+                        <span className="text-green-500 text-xs font-bold">MUSIC ON</span>
+                    )}
+                    </button>
+
+                    {combo > 0 && (
+                    <div className="flex flex-col items-end space-y-1">
+                        <div className="bg-yellow-500 text-black px-4 py-1 rounded-full animate-bounce shadow-[0_0_15px_rgba(234,179,8,0.6)]">
+                        <p className="text-sm font-black italic">COMBO x{combo}!</p>
+                        </div>
+                        <div className="w-32 h-2 bg-zinc-800 rounded-full overflow-hidden border border-white/20">
+                        <div 
+                            className="h-full bg-gradient-to-r from-yellow-500 to-red-500 transition-all duration-75 ease-linear"
+                            style={{ width: `${Math.min(100, comboTimer * 100)}%` }}
+                        />
+                        </div>
+                    </div>
+                    )}
+                    <div className={`bg-black/40 backdrop-blur-md border px-4 py-2 rounded-lg transition-colors duration-300 ${momentumBorder}`}>
+                    <p className={`text-xs uppercase tracking-widest text-right ${momentumText}`}>Momentum</p>
+                    <p className="text-xl font-bold">{(speed * 10).toFixed(1)} km/h</p>
+                    </div>
+                </div>
+                </div>
+            );
+        };
+
+        // --- GAME OVER COMPONENT ---
+        const getLocalCommentary = (score, height, combo) => {
+            if (score < 50) return "Did you even try? My grandmother jumps higher.";
+            if (score < 200) return "Warm up complete. Now try actually playing.";
+            if (score < 500) return "Not bad for a beginner. Keep your momentum up.";
+            if (score < 1000) return "Now we're getting somewhere! Nice hops.";
+            if (score < 2000) return "Impressive flow. You're understanding the physics.";
+            if (score < 5000) return "GODLIKE MOVEMENT! You are the Bunny King.";
+            return "Are you cheating? That score is impossible!";
+        };
+
+        const GameOver = ({ score, height, maxSpeed, combo, onRestart }) => {
+            const [commentary, setCommentary] = useState("");
+
+            useEffect(() => {
+                setCommentary(getLocalCommentary(score, height, combo));
+            }, [score, height, combo]);
+
+            return (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-xl z-50 flex items-center justify-center p-6">
+                <div className="max-w-md w-full bg-zinc-900 border-2 border-pink-500 p-8 rounded-2xl shadow-[0_0_50px_rgba(236,72,153,0.3)] text-center space-y-6">
+                    <h1 className="text-4xl font-orbitron font-bold text-white uppercase tracking-tighter italic">Run Terminated</h1>
+                    
+                    <div className="grid grid-cols-3 gap-2">
+                    <div className="bg-zinc-800 p-3 rounded-xl">
+                        <p className="text-zinc-400 text-[10px] uppercase">Total Score</p>
+                        <p className="text-lg font-bold text-cyan-400">{Math.floor(score)}</p>
+                    </div>
+                    <div className="bg-zinc-800 p-3 rounded-xl">
+                        <p className="text-zinc-400 text-[10px] uppercase">Peak Height</p>
+                        <p className="text-lg font-bold text-purple-400">{Math.floor(height)}m</p>
+                    </div>
+                    <div className="bg-zinc-800 p-3 rounded-xl">
+                        <p className="text-zinc-400 text-[10px] uppercase">Max Momentum</p>
+                        <p className="text-lg font-bold text-pink-400">{(maxSpeed * 10).toFixed(0)}</p>
+                    </div>
+                    </div>
+
+                    <div className="bg-zinc-800/50 p-4 rounded-xl border border-zinc-700 italic text-zinc-300">
+                    <p className="text-sm">"{commentary}"</p>
+                    </div>
+
+                    <button
+                    onClick={onRestart}
+                    className="w-full bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-white font-orbitron font-bold py-4 rounded-xl transition-all transform hover:scale-105 active:scale-95 shadow-lg"
+                    >
+                    START NEW RUN
+                    </button>
+                </div>
+                </div>
+            );
+        };
+
+        // --- AUDIO ENGINE ---
+        class MusicEngine {
+            constructor() {
+                this.ctx = null;
+                this.isPlaying = false;
+                this.nextNoteTime = 0;
+                this.tempo = 125;
+                this.lookahead = 25.0;
+                this.scheduleAheadTime = 0.1;
+                this.beatCount = 0;
+                this.timerID = null;
+                this.bassFreqs = [55, 55, 55, 55, 65.41, 65.41, 49, 49];
+            }
+            
+            init() {
+                if (!this.ctx) {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+            }
+
+            resume() {
+                if (this.ctx && this.ctx.state === 'suspended') {
+                this.ctx.resume();
+                }
+            }
+
+            start() {
+                if (this.isPlaying) return;
+                this.init();
+                this.isPlaying = true;
+                this.beatCount = 0;
+                if (this.ctx) this.nextNoteTime = this.ctx.currentTime + 0.1;
+                this.scheduler();
+            }
+
+            stop() {
+                this.isPlaying = false;
+                if (this.timerID) window.clearTimeout(this.timerID);
+            }
+
+            scheduler() {
+                if (!this.isPlaying || !this.ctx) return;
+                while (this.nextNoteTime < this.ctx.currentTime + this.scheduleAheadTime) {
+                this.scheduleNote(this.beatCount, this.nextNoteTime);
+                this.nextNote();
+                }
+                this.timerID = window.setTimeout(() => this.scheduler(), this.lookahead);
+            }
+
+            nextNote() {
+                const secondsPerBeat = 60.0 / this.tempo;
+                this.nextNoteTime += 0.25 * secondsPerBeat;
+                this.beatCount++;
+            }
+
+            scheduleNote(beatNumber, time) {
+                if (!this.ctx) return;
+                const step = beatNumber % 16;
+                const bar = Math.floor(beatNumber / 16) % 8;
+
+                if (step % 4 === 0) {
+                    this.playKick(time);
+                }
+
+                if (step % 2 === 0 || (step === 15)) {
+                    this.playHiHat(time, step % 4 === 0 ? 0.05 : 0.03);
+                }
+
+                if (step === 4 || step === 12) {
+                    this.playSnare(time);
+                }
+
+                if (step % 2 === 0) {
+                    const note = this.bassFreqs[bar % this.bassFreqs.length];
+                    if (step !== 0 || bar % 4 === 3) { 
+                        this.playBass(time, note);
+                    }
+                }
+                
+                if (Math.random() > 0.8 && step % 2 !== 0) {
+                    this.playSynth(time, 440 + Math.random() * 220);
+                }
+            }
+
+            playKick(time) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.frequency.setValueAtTime(150, time);
+                osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.5);
+                gain.gain.setValueAtTime(0.8, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.5);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(time);
+                osc.stop(time + 0.5);
+            }
+
+            playSnare(time) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(100, time);
+                gain.gain.setValueAtTime(0.4, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(time);
+                osc.stop(time + 0.2);
+            }
+
+            playHiHat(time, vol) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                const filter = this.ctx.createBiquadFilter();
+                osc.type = 'square';
+                osc.frequency.value = 8000;
+                filter.type = 'highpass';
+                filter.frequency.value = 7000;
+                gain.gain.setValueAtTime(vol * 0.5, time);
+                gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(time);
+                osc.stop(time + 0.05);
+            }
+
+            playBass(time, freq) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                const filter = this.ctx.createBiquadFilter();
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(freq, time);
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(400, time);
+                filter.frequency.linearRampToValueAtTime(100, time + 0.2);
+                gain.gain.setValueAtTime(0.3, time);
+                gain.gain.linearRampToValueAtTime(0.01, time + 0.2);
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(time);
+                osc.stop(time + 0.2);
+            }
+            
+            playSynth(time, freq) {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(freq, time);
+                gain.gain.setValueAtTime(0.1, time);
+                gain.gain.exponentialRampToValueAtTime(0.01, time + 0.3);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(time);
+                osc.stop(time + 0.3);
+            }
+        }
+
+        const musicEngine = new MusicEngine();
+
+        // --- MAIN APP COMPONENT ---
+        const App = () => {
+            const canvasRef = useRef(null);
+            const containerRef = useRef(null);
+            const [scale, setScale] = useState(1);
+            const [gameState, setGameState] = useState({
+                score: 0,
+                bestScore: 0,
+                height: 0,
+                maxHeight: 0,
+                combo: 0,
+                comboTimer: 0,
+                maxSpeed: 0,
+                status: GameStatus.MENU,
+                speedMultiplier: 1.0,
+                isMuted: false,
+                actionText: undefined
+            });
+
+            const playerRef = useRef({
+                x: WORLD_WIDTH / 2 - 16,
+                y: CANVAS_HEIGHT - 150,
+                vx: 0,
+                vy: 0,
+                width: 32,
+                height: 32,
+                grounded: false,
+                jumpHeld: false,
+                speed: 0,
+            });
+
+            const platformsRef = useRef([]);
+            const starsRef = useRef([]);
+            const keysRef = useRef({});
+            const cameraY = useRef(0);
+            const lastTime = useRef(0);
+            
+            // Game Logic Refs
+            const jumpBufferTime = useRef(0); 
+            const lastPlatformY = useRef(WORLD_FLOOR_Y); 
+            const autoScrollSpeed = useRef(0);
+            const comboTimeRef = useRef(0); 
+            const groundTimeRef = useRef(0); 
+            const lastGroundDuration = useRef(0); 
+
+            // Touch Handling Refs
+            const touchStartRef = useRef([]);
+
+            // Responsive Scaling
+            useEffect(() => {
+                const handleResize = () => {
+                const availableHeight = window.innerHeight - 0; 
+                const availableWidth = window.innerWidth - 0;
+                const scaleHeight = availableHeight / CANVAS_HEIGHT;
+                const scaleWidth = availableWidth / WORLD_WIDTH;
+                setScale(Math.min(1, scaleHeight, scaleWidth));
+                };
+                window.addEventListener('resize', handleResize);
+                handleResize(); 
+                return () => window.removeEventListener('resize', handleResize);
+            }, []);
+
+            // --- TOUCH CONTROLS ---
+            const handleTouchStart = (e) => {
+                const rect = containerRef.current?.getBoundingClientRect();
+                if(!rect) return;
+
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    const t = e.changedTouches[i];
+                    touchStartRef.current.push({ 
+                        id: t.identifier, 
+                        x: t.clientX, 
+                        y: t.clientY 
+                    });
+                }
+                updateTouchKeys(e.touches, rect);
+            };
+
+            const handleTouchMove = (e) => {
+                const rect = containerRef.current?.getBoundingClientRect();
+                if(!rect) return;
+                
+                // Swipe Detection
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    const t = e.changedTouches[i];
+                    const start = touchStartRef.current.find(s => s.id === t.identifier);
+                    if (start) {
+                        const dy = t.clientY - start.y;
+                        if (dy < -40) { // Swipe Up detected
+                            jumpBufferTime.current = performance.now(); // Trigger Jump
+                            start.y = t.clientY; // Reset origin
+                        }
+                    }
+                }
+                updateTouchKeys(e.touches, rect);
+            };
+
+            const handleTouchEnd = (e) => {
+                const rect = containerRef.current?.getBoundingClientRect();
+                if(!rect) return;
+
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    const t = e.changedTouches[i];
+                    touchStartRef.current = touchStartRef.current.filter(s => s.id !== t.identifier);
+                }
+                updateTouchKeys(e.touches, rect);
+            };
+
+            const updateTouchKeys = (touches, rect) => {
+                let left = false;
+                let right = false;
+                const midX = rect.left + rect.width / 2;
+
+                for (let i = 0; i < touches.length; i++) {
+                    const t = touches[i];
+                    if (t.clientX < midX) left = true;
+                    else right = true;
+                }
+                
+                keysRef.current['ArrowLeft'] = left;
+                keysRef.current['ArrowRight'] = right;
+            };
+
+            const initStars = useCallback(() => {
+                const stars = [];
+                for (let i = 0; i < 200; i++) {
+                const depth = Math.random(); 
+                stars.push({
+                    x: Math.random() * WORLD_WIDTH,
+                    y: Math.random() * CANVAS_HEIGHT * 2, 
+                    size: Math.random() * 2.5 + 0.5,
+                    speed: depth * 0.8 + 0.2, 
+                    alpha: Math.random() * 0.7 + 0.3
+                });
+                }
+                starsRef.current = stars;
+            }, []);
+
+            const generatePlatform = (y) => {
+                const heightLevel = Math.abs(y); 
+                const difficultyFactor = Math.min(heightLevel / 10000, 1.0); 
+                
+                const baseWidth = 120 - (60 * difficultyFactor); 
+                const width = Math.max(40, baseWidth + Math.random() * 40);
+
+                const moveChance = 0.15 + (difficultyFactor * 0.6);
+                const isMoving = Math.random() < moveChance;
+
+                return {
+                x: Math.random() * (WORLD_WIDTH - width),
+                y: y,
+                width: width,
+                height: PLATFORM_HEIGHT,
+                type: isMoving ? 'moving' : 'normal',
+                direction: Math.random() > 0.5 ? 1 : -1,
+                };
+            };
+
+            const initPlatforms = useCallback(() => {
+                const platforms = [];
+                for (let i = 1; i < 20; i++) {
+                platforms.push(generatePlatform(WORLD_FLOOR_Y - i * 140));
+                }
+                platformsRef.current = platforms;
+            }, []);
+
+            const resetGame = () => {
+                playerRef.current = {
+                x: WORLD_WIDTH / 2 - 16,
+                y: WORLD_FLOOR_Y - 32,
+                vx: 0,
+                vy: 0,
+                width: 32,
+                height: 32,
+                grounded: true,
+                jumpHeld: false,
+                speed: 0,
+                };
+                cameraY.current = 0;
+                autoScrollSpeed.current = 0;
+                lastPlatformY.current = WORLD_FLOOR_Y;
+                jumpBufferTime.current = 0;
+                comboTimeRef.current = 0;
+                groundTimeRef.current = 0;
+                lastGroundDuration.current = 0;
+                keysRef.current = {}; 
+                
+                initPlatforms();
+                initStars();
+                setGameState(prev => ({
+                ...prev,
+                score: 0,
+                bestScore: prev.bestScore,
+                height: 0,
+                maxHeight: 0,
+                combo: 0,
+                comboTimer: 0,
+                maxSpeed: 0,
+                status: GameStatus.PLAYING,
+                speedMultiplier: 1.0,
+                actionText: undefined
+                }));
+            };
+
+            const showActionText = (text, x, y) => {
+                setGameState(prev => ({
+                ...prev,
+                actionText: { text, opacity: 1.0, x, y }
+                }));
+            };
+
+            const toggleMute = () => {
+                setGameState(prev => {
+                const newMuted = !prev.isMuted;
+                if (newMuted) {
+                    if (musicEngine.ctx) musicEngine.ctx.suspend();
+                } else {
+                    musicEngine.resume();
+                }
+                return { ...prev, isMuted: newMuted };
+                });
+            };
+
+            const update = (dt) => {
+                if (gameState.status !== GameStatus.PLAYING) return;
+
+                const dtMs = dt * 16.67;
+                const player = playerRef.current;
+                const keys = keysRef.current;
+                const now = performance.now();
+
+                // 1. Text Fade
+                if (gameState.actionText) {
+                setGameState(prev => {
+                    if (!prev.actionText) return prev;
+                    const newOp = prev.actionText.opacity - 0.02;
+                    if (newOp <= 0) return { ...prev, actionText: undefined };
+                    return { ...prev, actionText: { ...prev.actionText, opacity: newOp, y: prev.actionText.y - 0.5 } };
+                });
+                }
+
+                // 2. Combo Logic
+                if (gameState.combo > 0) {
+                comboTimeRef.current -= dtMs;
+                if (comboTimeRef.current <= 0) {
+                    setGameState(prev => ({ ...prev, combo: 0, comboTimer: 0 }));
+                    showActionText("COMBO END", player.x, player.y - 40);
+                }
+                }
+
+                if (player.grounded) {
+                groundTimeRef.current += dtMs;
+                if (groundTimeRef.current > GROUND_TOLERANCE_MS && gameState.combo > 0) {
+                    setGameState(prev => ({ ...prev, combo: 0, comboTimer: 0 }));
+                    comboTimeRef.current = 0;
+                    showActionText("TOO SLOW!", player.x, player.y - 40);
+                }
+                } else {
+                groundTimeRef.current = 0;
+                }
+
+                // 3. Auto-Scroll
+                if (gameState.height > 5) {
+                const targetSpeed = 0.8 + (gameState.height * 0.006); 
+                autoScrollSpeed.current = autoScrollSpeed.current * 0.99 + targetSpeed * 0.01;
+                cameraY.current -= autoScrollSpeed.current * dt;
+                }
+
+                // 4. Movement
+                const moveDir = (keys['ArrowLeft'] || keys['a']) ? -1 : (keys['ArrowRight'] || keys['d']) ? 1 : 0;
+                const comboSpeedBoost = Math.min(gameState.combo * 1.5, 12);
+                const currentMaxSpeed = MAX_HORIZONTAL_SPEED + comboSpeedBoost;
+
+                if (player.grounded) {
+                player.vx += moveDir * AIR_ACCEL * 2.5; 
+                player.vx *= GROUND_FRIC;
+                } else {
+                player.vx += moveDir * AIR_ACCEL;
+                player.vx *= AIR_FRIC;
+                }
+
+                if (Math.abs(player.vx) > currentMaxSpeed) {
+                player.vx = Math.sign(player.vx) * currentMaxSpeed;
+                }
+                
+                if (!player.grounded) {
+                    player.vy += GRAVITY;
+                }
+
+                // 5. Jump
+                const jumpPressed = keys[' '] || keys['ArrowUp'] || keys['w'];
+                
+                if (jumpPressed) {
+                    jumpBufferTime.current = now;
+                }
+
+                const canJump = player.grounded;
+                const wantsToJump = (now - jumpBufferTime.current) < JUMP_BUFFER_MS;
+
+                if (canJump && wantsToJump) {
+                    jumpBufferTime.current = 0; 
+                    lastGroundDuration.current = groundTimeRef.current;
+                    let force = BASE_JUMP_FORCE;
+                    force -= Math.abs(player.vx) * MOMENTUM_SCALE;
+                    force = Math.max(force, -25);
+                    player.vy = force;
+                    player.grounded = false;
+                }
+
+                player.x += player.vx;
+                player.y += player.vy;
+
+                if (player.x < 0) {
+                player.x = 0;
+                player.vx *= -0.8; 
+                }
+                if (player.x + player.width > WORLD_WIDTH) {
+                player.x = WORLD_WIDTH - player.width;
+                player.vx *= -0.8; 
+                }
+
+                // 6. Collision
+                let wasGrounded = player.grounded;
+                let isNowGrounded = false;
+
+                if (gameState.height < 50) {
+                    if (player.y + player.height >= WORLD_FLOOR_Y) {
+                    player.y = WORLD_FLOOR_Y - player.height;
+                    player.vy = 0;
+                    isNowGrounded = true;
+                    if (!wasGrounded) {
+                        if (lastPlatformY.current < WORLD_FLOOR_Y - 50) {
+                            setGameState(prev => ({ ...prev, combo: 0, comboTimer: 0 }));
+                            comboTimeRef.current = 0;
+                        }
+                        lastPlatformY.current = WORLD_FLOOR_Y;
+                    }
+                    }
+                }
+
+                if (player.vy >= 0) { 
+                platformsRef.current.forEach(p => {
+                    if (p.type === 'moving' && p.direction) {
+                    const moveSpeed = 2.0 + (gameState.height * 0.003);
+                    p.x += p.direction * moveSpeed;
+                    if (p.x <= 0) {
+                        p.x = 0;
+                        p.direction = 1;
+                    } else if (p.x + p.width >= WORLD_WIDTH) {
+                        p.x = WORLD_WIDTH - p.width;
+                        p.direction = -1;
+                    }
+                    }
+
+                    const playerCenter = player.x + player.width / 2;
+                    const snapThreshold = Math.max(5, player.vy + 5); 
+
+                    if (playerCenter > p.x && playerCenter < p.x + p.width &&
+                        player.y + player.height >= p.y &&
+                        player.y + player.height <= p.y + p.height + snapThreshold) {
+                    
+                    player.y = p.y - player.height;
+                    player.vy = 0;
+                    isNowGrounded = true;
+                    
+                    if (!wasGrounded) {
+                        const heightDiff = lastPlatformY.current - p.y; 
+                        
+                        if (heightDiff > 10) { 
+                            const floors = Math.max(1, Math.round(heightDiff / PLATFORM_GAP_AVG));
+                            const isFastJump = lastGroundDuration.current < GROUND_TOLERANCE_MS;
+                            let newCombo = gameState.combo;
+                            let scoreAdd = 0;
+                            let actionMsg = undefined;
+
+                            if (gameState.combo === 0) {
+                                if (floors >= 2) {
+                                    newCombo = floors;
+                                    comboTimeRef.current = COMBO_MAX_TIME_MS;
+                                    actionMsg = "DOUBLE JUMP!";
+                                } else if (isFastJump && floors >= 1) {
+                                    newCombo = 1;
+                                    comboTimeRef.current = COMBO_MAX_TIME_MS;
+                                    actionMsg = "COMBO START!";
+                                }
+                            } else {
+                                newCombo += floors;
+                                comboTimeRef.current = COMBO_MAX_TIME_MS;
+                                if (floors >= 2) actionMsg = "SUPER JUMP!";
+                                else actionMsg = `${newCombo}x COMBO!`;
+                            }
+
+                            const multiplier = newCombo > 0 ? Math.pow(newCombo, 1.1) : 1;
+                            scoreAdd = Math.floor(heightDiff * multiplier);
+
+                            setGameState(prev => ({
+                                ...prev,
+                                combo: newCombo,
+                                score: prev.score + scoreAdd,
+                                maxHeight: Math.max(prev.maxHeight, Math.floor((CANVAS_HEIGHT - p.y) / 10)),
+                                actionText: actionMsg ? { text: actionMsg, opacity: 1, x: player.x, y: player.y - 40 } : prev.actionText
+                            }));
+                        } else if (heightDiff < -10) {
+                            setGameState(prev => ({ ...prev, combo: 0, comboTimer: 0 }));
+                            comboTimeRef.current = 0;
+                        }
+                        lastPlatformY.current = p.y;
+                    }
+                    }
+                });
+                }
+
+                player.grounded = isNowGrounded;
+
+                // Camera Catch-up
+                const targetCamY = player.y - CANVAS_HEIGHT * 0.55;
+                if (targetCamY < cameraY.current) {
+                    cameraY.current += (targetCamY - cameraY.current) * 0.15;
+                }
+                if (cameraY.current > 0) cameraY.current = 0; 
+                if (player.y - CANVAS_HEIGHT * 0.4 < cameraY.current) {
+                    cameraY.current = player.y - CANVAS_HEIGHT * 0.4;
+                }
+
+                const bottomBound = cameraY.current + CANVAS_HEIGHT;
+                platformsRef.current = platformsRef.current.filter(p => p.y < bottomBound + 100);
+                
+                const highestPlatformY = platformsRef.current.length > 0 ? Math.min(...platformsRef.current.map(p => p.y)) : cameraY.current;
+                if (highestPlatformY > cameraY.current - 200) {
+                for(let i=1; i<=3; i++) {
+                    platformsRef.current.push(generatePlatform(highestPlatformY - i * 140));
+                }
+                }
+
+                if (player.y > cameraY.current + CANVAS_HEIGHT + 50) {
+                setGameState(prev => ({ 
+                    ...prev, 
+                    status: GameStatus.GAMEOVER,
+                    bestScore: Math.max(prev.bestScore, prev.score)
+                }));
+                }
+
+                const currentSpeed = Math.sqrt(player.vx ** 2 + player.vy ** 2);
+                setGameState(prev => ({ 
+                    ...prev, 
+                    height: Math.max(prev.height, Math.floor((CANVAS_HEIGHT - player.y) / 10)),
+                    comboTimer: Math.max(0, comboTimeRef.current / COMBO_MAX_TIME_MS),
+                    maxSpeed: Math.max(prev.maxSpeed, currentSpeed)
+                }));
+            };
+
+            const draw = () => {
+                const canvas = canvasRef.current;
+                const ctx = canvas?.getContext('2d');
+                if (!canvas || !ctx) return;
+                
+                const dpr = window.devicePixelRatio || 1;
+                ctx.setTransform(1, 0, 0, 1, 0, 0); 
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.scale(dpr, dpr);
+
+                const gradient = ctx.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+                gradient.addColorStop(0, '#020617');
+                gradient.addColorStop(1, '#172554');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, WORLD_WIDTH, CANVAS_HEIGHT);
+
+                starsRef.current.forEach(star => {
+                    let screenY = (star.y - (cameraY.current * star.speed)) % CANVAS_HEIGHT;
+                    if (screenY < 0) screenY += CANVAS_HEIGHT;
+
+                    ctx.globalAlpha = star.alpha;
+                    ctx.fillStyle = 'white';
+                    ctx.beginPath();
+                    ctx.arc(star.x, screenY, star.size, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+                ctx.globalAlpha = 1.0;
+
+                ctx.strokeStyle = 'rgba(6, 182, 212, 0.05)';
+                ctx.lineWidth = 1;
+                const gridOffsetY = -cameraY.current % 60;
+                for (let y = gridOffsetY; y < CANVAS_HEIGHT; y += 60) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(WORLD_WIDTH, y); ctx.stroke();
+                }
+
+                ctx.save();
+                ctx.translate(0, -cameraY.current);
+
+                if (cameraY.current > -CANVAS_HEIGHT) {
+                    ctx.fillStyle = '#1e293b';
+                    ctx.fillRect(0, WORLD_FLOOR_Y, WORLD_WIDTH, FLOOR_HEIGHT);
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = '#22d3ee';
+                    ctx.fillStyle = '#22d3ee';
+                    ctx.fillRect(0, WORLD_FLOOR_Y, WORLD_WIDTH, 4);
+                }
+                
+                platformsRef.current.forEach(p => {
+                const isMoving = p.type === 'moving';
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = isMoving ? 'rgba(236, 72, 153, 0.4)' : 'rgba(6, 182, 212, 0.4)';
+                const pGrad = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.height);
+                pGrad.addColorStop(0, isMoving ? '#f472b6' : '#22d3ee');
+                pGrad.addColorStop(1, isMoving ? '#be185d' : '#0891b2');
+                ctx.fillStyle = pGrad;
+                ctx.beginPath(); ctx.roundRect(p.x, p.y, p.width, p.height, 4); ctx.fill();
+                });
+
+                const player = playerRef.current;
+                
+                const intensity = Math.min(gameState.combo, 12) / 12; 
+                let r, g, b;
+                if (intensity < 0.2) {
+                const t = intensity * 5;
+                r = 34 + (168 - 34) * t;
+                g = 211 + (85 - 211) * t;
+                b = 238 + (247 - 238) * t;
+                } else if (intensity < 0.4) {
+                const t = (intensity - 0.2) * 5;
+                r = 168 + (236 - 168) * t;
+                g = 85 + (72 - 85) * t;
+                b = 247 + (153 - 247) * t;
+                } else if (intensity < 0.8) {
+                const t = (intensity - 0.4) * 2.5;
+                r = 236 + (220 - 236) * t;
+                g = 72 + (20 - 72) * t;
+                b = 153 + (60 - 153) * t;
+                } else {
+                const t = (intensity - 0.8) * 5;
+                r = 220 + (255 - 220) * t;
+                g = 20 + (255 - 20) * t;
+                b = 60 + (255 - 60) * t;
+                }
+                
+                const playerColor = `rgb(${Math.floor(r)}, ${Math.floor(g)}, ${Math.floor(b)})`;
+
+                const speed = Math.sqrt(player.vx ** 2 + player.vy ** 2);
+                if (speed > 10 || gameState.combo > 2) {
+                ctx.save();
+                ctx.globalAlpha = 0.2;
+                ctx.fillStyle = playerColor;
+                for (let i = 1; i <= 3; i++) {
+                    ctx.beginPath();
+                    ctx.roundRect(player.x - player.vx * (i * 2), player.y - player.vy * (i * 2), player.width, player.height, 8);
+                    ctx.fill();
+                }
+                ctx.restore();
+                }
+
+                ctx.shadowBlur = 25;
+                ctx.shadowColor = playerColor;
+                ctx.fillStyle = playerColor;
+                ctx.beginPath();
+                ctx.roundRect(player.x, player.y, player.width, player.height, 10);
+                ctx.fill();
+
+                ctx.fillStyle = 'white';
+                const lookX = player.vx > 1 ? 4 : (player.vx < -1 ? -4 : 0);
+                const lookY = player.vy < -2 ? -4 : (player.vy > 2 ? 4 : 0);
+                ctx.beginPath();
+                ctx.arc(player.x + 10 + lookX, player.y + 12 + lookY, 3, 0, Math.PI * 2);
+                ctx.arc(player.x + 22 + lookX, player.y + 12 + lookY, 3, 0, Math.PI * 2);
+                ctx.fill();
+
+                if (gameState.actionText) {
+                    ctx.save();
+                    ctx.globalAlpha = gameState.actionText.opacity;
+                    ctx.fillStyle = '#ffff00'; 
+                    ctx.font = 'bold 20px Orbitron';
+                    ctx.textAlign = 'center';
+                    ctx.shadowColor = 'black';
+                    ctx.shadowBlur = 4;
+                    ctx.fillText(gameState.actionText.text, gameState.actionText.x + 16, gameState.actionText.y);
+                    ctx.restore();
+                }
+
+                ctx.restore();
+
+                const deathLine = cameraY.current + CANVAS_HEIGHT + 50;
+                const distToDeath = deathLine - player.y;
+                
+                if (distToDeath < 300 && gameState.status === GameStatus.PLAYING) {
+                const warningAlpha = Math.max(0, (300 - distToDeath) / 300) * 0.6;
+                const warningGrad = ctx.createLinearGradient(0, CANVAS_HEIGHT, 0, CANVAS_HEIGHT - 200);
+                warningGrad.addColorStop(0, `rgba(239, 68, 68, ${warningAlpha})`);
+                warningGrad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+                ctx.fillStyle = warningGrad;
+                ctx.fillRect(0, CANVAS_HEIGHT - 200, WORLD_WIDTH, 200);
+                }
+            };
+
+            useEffect(() => {
+                const handleKeyDown = (e) => keysRef.current[e.key] = true;
+                const handleKeyUp = (e) => keysRef.current[e.key] = false;
+
+                window.addEventListener('keydown', handleKeyDown);
+                window.addEventListener('keyup', handleKeyUp);
+
+                let frameId;
+                const loop = (time) => {
+                const dt = lastTime.current ? (time - lastTime.current) / 16.67 : 1;
+                lastTime.current = time;
+                update(dt);
+                draw();
+                frameId = requestAnimationFrame(loop);
+                };
+
+                frameId = requestAnimationFrame(loop);
+                initPlatforms();
+                initStars();
+
+                return () => {
+                window.removeEventListener('keydown', handleKeyDown);
+                window.removeEventListener('keyup', handleKeyUp);
+                cancelAnimationFrame(frameId);
+                };
+            }, [gameState.status, initPlatforms, initStars]);
+
+            const handleStart = () => {
+                if (!musicEngine.isPlaying) {
+                    musicEngine.start();
+                }
+                resetGame();
+            };
+
+            const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+
+            return (
+                <div 
+                    ref={containerRef}
+                    className="relative w-full h-screen bg-black flex items-center justify-center overflow-hidden touch-none select-none"
+                    onContextMenu={(e) => e.preventDefault()}
+                    onTouchStart={handleTouchStart}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                >
+                <div 
+                    className="relative shadow-[0_0_100px_rgba(0,0,0,1)] border-x-4 border-zinc-900 overflow-hidden origin-center transition-transform duration-300 ease-out" 
+                    style={{ 
+                    width: WORLD_WIDTH, 
+                    height: CANVAS_HEIGHT,
+                    transform: `scale(${scale})`
+                    }}
+                >
+                    <canvas
+                    ref={canvasRef}
+                    width={WORLD_WIDTH * dpr}
+                    height={CANVAS_HEIGHT * dpr}
+                    style={{ width: WORLD_WIDTH, height: CANVAS_HEIGHT }}
+                    className="bg-zinc-950"
+                    />
+
+                    {gameState.status === GameStatus.PLAYING && (
+                    <HUD 
+                        score={gameState.score} 
+                        height={gameState.height} 
+                        combo={gameState.combo}
+                        comboTimer={gameState.comboTimer}
+                        speed={Math.sqrt(playerRef.current.vx ** 2 + playerRef.current.vy ** 2)}
+                        isMuted={gameState.isMuted}
+                        onToggleMute={toggleMute}
+                    />
+                    )}
+
+                    {gameState.status === GameStatus.MENU && (
+                    <div className="absolute inset-0 bg-black/70 backdrop-blur-md flex flex-col items-center justify-center space-y-8 p-6 text-center z-20 pointer-events-auto">
+                        <div className="space-y-1">
+                        <h1 className="text-7xl font-orbitron font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-purple-500 to-pink-500 italic tracking-tighter drop-shadow-2xl">
+                            NEON BUNNY
+                        </h1>
+                        <p className="text-cyan-400 font-orbitron uppercase tracking-[0.3em] text-[10px] font-bold">Infinite Momentum Jumper</p>
+                        </div>
+
+                        <div className="max-w-xs space-y-4 text-zinc-300 text-sm bg-black/40 p-6 rounded-3xl border border-white/10 backdrop-blur-xl">
+                        <p className="leading-relaxed">
+                            <span className="text-cyan-300 font-bold">CONTROLS:</span>
+                            <br/>
+                            Desktop: A/D or Arrows to Move, Space/W to Jump.
+                            <br/>
+                            <span className="text-yellow-400">Mobile: Touch Sides to Move, Swipe Up to Jump.</span>
+                        </p>
+                        <div className="grid grid-cols-2 gap-4 pt-2 text-xs">
+                            <div className="bg-white/5 p-2 rounded border border-white/10">
+                                <span className="block text-pink-500 font-bold">SPEED</span>
+                                <span className="text-zinc-500">Run to Jump Higher</span>
+                            </div>
+                            <div className="bg-white/5 p-2 rounded border border-white/10">
+                                <span className="block text-yellow-500 font-bold">COMBO</span>
+                                <span className="text-zinc-500">Don't Stop Moving</span>
+                            </div>
+                            <div className="bg-white/5 p-2 rounded border border-white/10">
+                                <span className="block text-cyan-500 font-bold">WALL BOUNCE</span>
+                                <span className="text-zinc-500">Keep Momentum</span>
+                            </div>
+                            <div className="bg-white/5 p-2 rounded border border-white/10">
+                                <span className="block text-red-500 font-bold">FLOW</span>
+                                <span className="text-zinc-500">Rhythm is Key</span>
+                            </div>
+                        </div>
+                        </div>
+
+                        <button
+                        onClick={handleStart}
+                        className="group relative px-16 py-5 bg-white text-black font-orbitron font-black text-2xl rounded-full transition-all hover:scale-110 active:scale-90 shadow-[0_0_30px_rgba(255,255,255,0.3)]"
+                        >
+                        RUN . EXE
+                        </button>
+                        
+                        {gameState.bestScore > 0 && (
+                        <p className="text-zinc-500 font-orbitron text-xs uppercase tracking-widest animate-pulse">
+                            Personal Best: {Math.floor(gameState.bestScore)}
+                        </p>
+                        )}
+                    </div>
+                    )}
+
+                    {gameState.status === GameStatus.GAMEOVER && (
+                    <GameOver 
+                        score={gameState.score} 
+                        height={gameState.height} 
+                        maxSpeed={gameState.maxSpeed}
+                        combo={gameState.combo}
+                        onRestart={handleStart} 
+                    />
+                    )}
+                </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
